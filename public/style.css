@@ -1,0 +1,129 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: Inter, system-ui, sans-serif; background: #1a1a2e; color: #eee; }
+#app { display: flex; height: 100vh; }
+#graph-container { flex: 1; position: relative; }
+#sidebar {
+    width: 320px; background: #16213e; padding: 16px;
+    overflow-y: auto; border-left: 1px solid #333;
+    display: flex; flex-direction: column; gap: 16px;
+}
+#sidebar h2 { font-size: 14px; color: #8C4FFF; }
+#sidebar h2 #version { font-size: 11px; color: #64748b; font-weight: normal; }
+#disclaimer { font-size: 10px; color: #64748b; margin-top: -8px; }
+#node-info { font-size: 13px; line-height: 1.6; }
+#node-info .field { margin-bottom: 8px; }
+#node-info .label { color: #9ca3af; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+#node-info .value { color: #f0f0f0; word-break: break-all; }
+#node-info .tag {
+    display: inline-block; background: #0f3460; border: 1px solid #334155;
+    padding: 2px 8px; border-radius: 3px; margin: 2px 4px 2px 0;
+    font-size: 11px; color: #e2e8f0;
+}
+#search {
+    width: 100%; padding: 8px 12px;
+    background: #0f3460; border: 1px solid #444; color: #eee;
+    border-radius: 4px; font-size: 13px;
+}
+#search::placeholder { color: #666; }
+
+/* Search wrapper with clear button */
+#search-wrapper {
+    position: relative; width: 100%;
+}
+#search-wrapper #search {
+    padding-right: 30px;
+}
+#search-clear {
+    display: none; position: absolute; right: 6px; top: 50%;
+    transform: translateY(-50%);
+    background: none; border: none; color: #888;
+    font-size: 18px; cursor: pointer; padding: 2px 6px;
+    line-height: 1; border-radius: 3px;
+}
+#search-clear:hover { color: #fff; background: rgba(255,255,255,0.1); }
+#stats { font-size: 11px; color: #9ca3af; }
+
+/* Filter toggles */
+#filters { display: flex; flex-direction: column; gap: 4px; }
+#filters h3 { font-size: 12px; color: #888; margin-bottom: 4px; }
+.filter-item {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; cursor: pointer; user-select: none;
+    padding: 4px 6px; border-radius: 4px; transition: background 0.15s;
+}
+.filter-item:hover { background: rgba(255,255,255,0.05); }
+.filter-item input[type="checkbox"] { accent-color: #8C4FFF; cursor: pointer; }
+.filter-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.filter-count { margin-left: auto; color: #9ca3af; font-size: 11px; }
+.filter-item.disabled { opacity: 0.4; }
+
+/* Controls hint */
+#controls-hint {
+    font-size: 11px; color: #9ca3af; border-top: 1px solid #333;
+    padding-top: 12px; line-height: 1.6;
+}
+#controls-hint kbd {
+    background: #0f3460; padding: 1px 5px; border-radius: 3px;
+    font-family: monospace; font-size: 10px; color: #e2e8f0;
+}
+
+/* Click-locked indicator */
+#lock-indicator {
+    display: none; position: absolute; top: 12px; left: 12px;
+    background: rgba(140, 79, 255, 0.9); color: white;
+    padding: 6px 12px; border-radius: 4px; font-size: 12px;
+    z-index: 100; cursor: pointer;
+}
+#lock-indicator:hover { background: rgba(140, 79, 255, 1); }
+
+/* Load graph button */
+#load-graph-btn {
+    width: 100%; padding: 10px 16px;
+    background: #0f3460; border: 1px solid #444; color: #ccc;
+    border-radius: 4px; font-size: 13px; cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+}
+#load-graph-btn:hover { background: #1a4a80; border-color: #8C4FFF; color: #fff; }
+
+/* File drop overlay */
+#drop-overlay {
+    display: none;
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(26, 26, 46, 0.95);
+    z-index: 1000;
+    justify-content: center; align-items: center;
+}
+#drop-overlay.visible { display: flex; }
+#drop-dialog {
+    background: #16213e; border: 2px dashed #8C4FFF;
+    border-radius: 12px; padding: 48px;
+    text-align: center; max-width: 500px; width: 90%;
+}
+#drop-dialog h2 { color: #8C4FFF; margin-bottom: 16px; font-size: 20px; }
+#drop-dialog p { color: #888; margin-bottom: 24px; font-size: 14px; }
+#drop-dialog .drop-zone {
+    border: 2px dashed #444; border-radius: 8px;
+    padding: 32px; margin-bottom: 16px;
+    transition: border-color 0.2s, background 0.2s;
+    cursor: pointer;
+}
+#drop-dialog .drop-zone:hover,
+#drop-dialog .drop-zone.dragover {
+    border-color: #8C4FFF; background: rgba(140, 79, 255, 0.1);
+}
+#drop-dialog .drop-zone p { color: #aaa; margin-bottom: 0; }
+#drop-dialog input[type="file"] { display: none; }
+#drop-dialog .or-text { color: #666; font-size: 12px; margin: 12px 0; }
+#drop-dialog .file-btn {
+    background: #8C4FFF; color: white; border: none;
+    padding: 10px 24px; border-radius: 6px; font-size: 14px;
+    cursor: pointer; transition: background 0.2s;
+}
+#drop-dialog .file-btn:hover { background: #7a3fe6; }
+#drop-dialog .cancel-btn {
+    display: block; margin: 16px auto 0; padding: 8px 20px;
+    background: transparent; border: 1px solid #555; color: #aaa;
+    border-radius: 6px; font-size: 13px; cursor: pointer;
+    transition: border-color 0.2s, color 0.2s;
+}
+#drop-dialog .cancel-btn:hover { border-color: #888; color: #fff; }

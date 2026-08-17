@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GNAWS Viewer - Resource Graph</title>
+    <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+    <div id="app">
+        <div id="graph-container">
+            <div id="lock-indicator">🔒 Node locked — click here or press Esc to unlock</div>
+        </div>
+        <div id="sidebar">
+            <h2>GNAWS Viewer <span id="version"></span></h2>
+            <p id="disclaimer">Not affiliated with or endorsed by Amazon Web Services.</p>
+            <div id="search-wrapper">
+                <input type="text" id="search" placeholder="Search resources..." />
+                <button id="search-clear" title="Clear search">×</button>
+            </div>
+            <div id="stats"></div>
+            <div id="filters">
+                <h3>Resource Types</h3>
+            </div>
+            <div id="node-info">
+                <p style="color: #666;">Hover or click a node to see details.</p>
+            </div>
+            <div id="controls-hint">
+                <strong>Controls</strong><br>
+                <kbd>Hover</kbd> Highlight node<br>
+                <kbd>Click</kbd> Focus node + neighbors<br>
+                <kbd>Click empty</kbd> Unfocus<br>
+                <kbd>Esc</kbd> Unfocus<br>
+                <kbd>Scroll</kbd> Zoom<br>
+                <kbd>Drag</kbd> Pan
+            </div>
+            <button id="load-graph-btn">📂 Load New Graph</button>
+        </div>
+    </div>
+
+    <!-- File drop overlay (shown when graph.json is not available) -->
+    <div id="drop-overlay">
+        <div id="drop-dialog">
+            <h2>📊 Load Graph Data</h2>
+            <p>No graph.json found on the server.<br>Drop a graph JSON file or pick one from disk.</p>
+            <div class="drop-zone" id="drop-zone">
+                <p>Drag & drop graph.json here</p>
+            </div>
+            <div class="or-text">— or —</div>
+            <button class="file-btn" id="file-btn">Choose File</button>
+            <button class="cancel-btn" id="cancel-btn">Cancel</button>
+            <input type="file" id="file-input" accept=".json,application/json" />
+        </div>
+    </div>
+
+    <script type="module">
+        import Sigma from "https://esm.sh/sigma@3.0.3";
+        import Graph from "https://esm.sh/graphology@0.25.4";
+        import { createNodeImageProgram } from "https://esm.sh/@sigma/node-image@3.0.0?deps=sigma@3.0.3";
+        import { createNodeCompoundProgram } from "https://esm.sh/sigma@3.0.3/rendering";
+        import { createNodeBorderProgram } from "https://esm.sh/@sigma/node-border@3.0.0?deps=sigma@3.0.3";
+
+        let EdgeCurveProgram = null;
+        try {
+            const edgeCurveModule = await import("https://esm.sh/@sigma/edge-curve@3.1.0?deps=sigma@3.0.3");
+            EdgeCurveProgram = edgeCurveModule.EdgeCurvedArrowProgram || edgeCurveModule.default;
+        } catch (e) {
+            console.warn("Edge curve program not available, using default edges", e);
+        }
+
+        // ─── Layout imports ──────────────────────────────────────────────
+        import forceAtlas2 from "https://esm.sh/graphology-layout-forceatlas2@0.10.1";
+        import { circular } from "https://esm.sh/graphology-layout@0.6.1";
+
+        // ─── Resource type config ────────────────────────────────────────
+        const RESOURCE_TYPES = {
+            "region": { color: "#232F3E", label: "Region", icon: "Res_Globe_48_Dark.svg" },
+            "vpc": { color: "#8C4FFF", label: "VPC", icon: "Res_Amazon-VPC_Virtual-private-cloud-VPC_48.svg" },
+            "subnet": { color: "#8C4FFF", label: "Subnet", icon: "Res_Amazon-VPC_Virtual-private-cloud-VPC_48.svg" },
+            "securitygroup": { color: "#DD344C", label: "Security Group", icon: "Res_SSL-padlock_48_Dark.svg" },
+            "internetgateway": { color: "#8C4FFF", label: "Internet Gateway", icon: "Res_Amazon-VPC_Internet-Gateway_48.svg" },
+            "natgateway": { color: "#8C4FFF", label: "NAT Gateway", icon: "Res_Amazon-VPC_NAT-Gateway_48.svg" },
+            "networkinterface": { color: "#8C4FFF", label: "Network Interface", icon: "Res_Amazon-VPC_Elastic-Network-Interface_48.svg" },
+            "routetable": { color: "#8C4FFF", label: "Route Table", icon: "Res_Amazon-VPC_Router_48.svg" },
+            "vpcendpoint": { color: "#8C4FFF", label: "VPC Endpoint", icon: "Res_Amazon-VPC_Endpoints_48.svg" },
+            "vpcpeering": { color: "#8C4FFF", label: "VPC Peering", icon: "Res_Amazon-VPC_Peering-Connection_48.svg" },
+            "flowlog": { color: "#8C4FFF", label: "Flow Log", icon: "Res_Amazon-VPC_Flow-Logs_48.svg" },
+            "networkacl": { color: "#8C4FFF", label: "Network ACL", icon: "Res_Amazon-VPC_Network-Access-Control-List_48.svg" },
+            "dhcpoptions": { color: "#8C4FFF", label: "DHCP Options", icon: "Res_Gear_48_Dark.svg" },
+            "prefixlist": { color: "#8C4FFF", label: "Prefix List", icon: "Res_Gear_48_Dark.svg" },
+            "transitgateway": { color: "#8C4FFF", label: "Transit Gateway", icon: "Res_AWS-Transit-Gateway_Attachment_48.svg" },
+            "transitgatewayroutetable": { color: "#8C4FFF", label: "Transit GW Route Table", icon: "Res_AWS-Cloud-WAN_Transit-Gateway-Route-Table-Attachment_48.svg" },
+            "localgateway": { color: "#8C4FFF", label: "Local Gateway", icon: "Res_Gear_48_Dark.svg" },
+            "elasticip": { color: "#8C4FFF", label: "Elastic IP", icon: "Res_Amazon-EC2_Elastic-IP-Address_48.svg" },
+            "instanceconnectendpoint": { color: "#8C4FFF", label: "Instance Connect EP", icon: "Res_Amazon-VPC_Endpoints_48.svg" },
+            "instance": { color: "#ED7100", label: "EC2 Instance", icon: "Res_Amazon-EC2_Instance_48.svg" },
+            "ami": { color: "#ED7100", label: "AMI", icon: "Res_Amazon-EC2_AMI_48.svg" },
+            "launchtemplate": { color: "#ED7100", label: "Launch Template", icon: "Res_Server_48_Dark.svg" },
+            "keypair": { color: "#ED7100", label: "Key Pair", icon: "Res_Disk_48_Dark.svg" },
+            "volume": { color: "#3B48CC", label: "EBS Volume", icon: "Res_Amazon-Elastic-Block-Store_Volume_48.svg" },
+            "snapshot": { color: "#3B48CC", label: "EBS Snapshot", icon: "Res_Amazon-Elastic-Block-Store_Snapshot_48.svg" },
+            "s3bucket": { color: "#3B48CC", label: "S3 Bucket", icon: "Res_Amazon-Simple-Storage-Service_Bucket_48.svg" },
+            "lambdafunction": { color: "#ED7100", label: "Lambda Function", icon: "Res_AWS-Lambda_Lambda-Function_48.svg" },
+            "lambdaalias": { color: "#ED7100", label: "Lambda Alias", icon: "Res_AWS-Lambda_Lambda-Function_48.svg" },
+            "lambdalayer": { color: "#ED7100", label: "Lambda Layer", icon: "Res_AWS-Lambda_Lambda-Function_48.svg" },
+            "functionurl": { color: "#ED7100", label: "Function URL", icon: "Res_AWS-Lambda_Lambda-Function_48.svg" },
+            "provisionedconcurrency": { color: "#ED7100", label: "Provisioned Concurrency", icon: "Res_AWS-Lambda_Lambda-Function_48.svg" },
+            "eventsourcemapping": { color: "#ED7100", label: "Event Source Mapping", icon: "Res_AWS-Lambda_Lambda-Function_48.svg" },
+            "role": { color: "#DD344C", label: "IAM Role", icon: "Res_AWS-Identity-Access-Management_Role_48.svg" },
+            "user": { color: "#DD344C", label: "IAM User", icon: "Res_User_48_Dark.svg" },
+            "policy": { color: "#DD344C", label: "IAM Policy", icon: "Res_AWS-Identity-Access-Management_Permissions_48.svg" },
+            "group": { color: "#DD344C", label: "IAM Group", icon: "Res_Users_48_Dark.svg" },
+            "instanceprofile": { color: "#DD344C", label: "Instance Profile", icon: "Res_AWS-Identity-Access-Management_Role_48.svg" },
+            "mfadevice": { color: "#DD344C", label: "MFA Device", icon: "Res_AWS-Identity-Access-Management_MFA-Token_48.svg" },
+            "virtualmfadevice": { color: "#DD344C", label: "Virtual MFA", icon: "Res_AWS-Identity-Access-Management_MFA-Token_48.svg" },
+            "accesskey": { color: "#DD344C", label: "Access Key", icon: "Res_AWS-Identity-Access-Management_Long-Term-Security-Credential_48.svg" },
+            "sshpublickey": { color: "#DD344C", label: "SSH Public Key", icon: "Res_Credentials_48_Dark.svg" },
+            "servercertificate": { color: "#DD344C", label: "Server Certificate", icon: "Res_Credentials_48_Dark.svg" },
+            "distribution": { color: "#8C4FFF", label: "CloudFront Distribution", icon: "Res_Amazon-CloudFront_Download-Distribution_48.svg" },
+            "cloudfrontfunction": { color: "#8C4FFF", label: "CloudFront Function", icon: "Res_Amazon-CloudFront_Functions_48.svg" },
+            "originaccesscontrol": { color: "#8C4FFF", label: "Origin Access Control", icon: "Res_Shield_48_Dark.svg" },
+            "loggroup": { color: "#E7157B", label: "Log Group", icon: "Res_Logs_48_Dark.svg" },
+            "alarm": { color: "#E7157B", label: "CloudWatch Alarm", icon: "Res_Alert_48_Dark.svg" },
+            // ─── Databases ───────────────────────────────────────────────
+            "dbinstance": { color: "#3B48CC", label: "RDS Instance", icon: "Arch_Amazon-RDS_48.svg" },
+            "dbcluster": { color: "#3B48CC", label: "RDS Cluster", icon: "Arch_Amazon-RDS_48.svg" },
+            "dbproxy": { color: "#3B48CC", label: "RDS Proxy", icon: "Arch_Amazon-RDS_48.svg" },
+            "dbproxytargetgroup": { color: "#3B48CC", label: "RDS Proxy Target Group", icon: "Arch_Amazon-RDS_48.svg" },
+            "dbsubnetgroup": { color: "#3B48CC", label: "DB Subnet Group", icon: "Arch_Amazon-RDS_48.svg" },
+            "dynamodbtable": { color: "#3B48CC", label: "DynamoDB Table", icon: "Arch_Amazon-DynamoDB_48.svg" },
+            "cachecluster": { color: "#3B48CC", label: "ElastiCache Cluster", icon: "Arch_Amazon-ElastiCache_48.svg" },
+            "replicationgroup": { color: "#3B48CC", label: "ElastiCache Repl Group", icon: "Arch_Amazon-ElastiCache_48.svg" },
+            "cachesubnetgroup": { color: "#3B48CC", label: "Cache Subnet Group", icon: "Arch_Amazon-ElastiCache_48.svg" },
+            "serverlesscache": { color: "#3B48CC", label: "Serverless Cache", icon: "Arch_Amazon-ElastiCache_48.svg" },
+            "neptunecluster": { color: "#3B48CC", label: "Neptune Cluster", icon: "Arch_Amazon-Neptune_48.svg" },
+            "neptuneinstance": { color: "#3B48CC", label: "Neptune Instance", icon: "Arch_Amazon-Neptune_48.svg" },
+            "neptunesubnetgroup": { color: "#3B48CC", label: "Neptune Subnet Group", icon: "Arch_Amazon-Neptune_48.svg" },
+            "docdbcluster": { color: "#3B48CC", label: "DocumentDB Cluster", icon: "Arch_Amazon-RDS_48.svg" },
+            "docdbinstance": { color: "#3B48CC", label: "DocumentDB Instance", icon: "Arch_Amazon-RDS_48.svg" },
+            "docdbsubnetgroup": { color: "#3B48CC", label: "DocumentDB Subnet Group", icon: "Arch_Amazon-RDS_48.svg" },
+            "redshiftcluster": { color: "#3B48CC", label: "Redshift Cluster", icon: "Arch_Amazon-Redshift_48.svg" },
+            "redshiftsubnetgroup": { color: "#3B48CC", label: "Redshift Subnet Group", icon: "Arch_Amazon-Redshift_48.svg" },
+            "opensearchdomain": { color: "#3B48CC", label: "OpenSearch Domain", icon: "Arch_Amazon-OpenSearch-Service_48.svg" },
+            // ─── Containers ──────────────────────────────────────────────
+            "ecscluster": { color: "#ED7100", label: "ECS Cluster", icon: "Arch_Amazon-Elastic-Container-Service_48.svg" },
+            "ecsservice": { color: "#ED7100", label: "ECS Service", icon: "Arch_Amazon-Elastic-Container-Service_48.svg" },
+            "taskdefinition": { color: "#ED7100", label: "Task Definition", icon: "Arch_Amazon-Elastic-Container-Service_48.svg" },
+            "containerinstance": { color: "#ED7100", label: "Container Instance", icon: "Arch_Amazon-Elastic-Container-Service_48.svg" },
+            "ecrrepository": { color: "#ED7100", label: "ECR Repository", icon: "Arch_Amazon-Elastic-Container-Registry_48.svg" },
+            "ekscluster": { color: "#ED7100", label: "EKS Cluster", icon: "Arch_Amazon-EKS-Anywhere_48.svg" },
+            "eksnodegroup": { color: "#ED7100", label: "EKS Node Group", icon: "Arch_Amazon-EKS-Anywhere_48.svg" },
+            "eksaddon": { color: "#ED7100", label: "EKS Add-on", icon: "Arch_Amazon-EKS-Anywhere_48.svg" },
+            "fargateprofile": { color: "#ED7100", label: "Fargate Profile", icon: "Arch_Amazon-Elastic-Container-Service_48.svg" },
+            // ─── Compute (additional) ────────────────────────────────────
+            "autoscalinggroup": { color: "#ED7100", label: "Auto Scaling Group", icon: "Arch_Amazon-EC2-Auto-Scaling_48.svg" },
+            "launchconfiguration": { color: "#ED7100", label: "Launch Configuration", icon: "Arch_Amazon-EC2-Auto-Scaling_48.svg" },
+            "apprunnerservice": { color: "#ED7100", label: "App Runner Service", icon: "Arch_AWS-App-Runner_48.svg" },
+            "batchcomputeenvironment": { color: "#ED7100", label: "Batch Compute Env", icon: "Arch_AWS-Batch_48.svg" },
+            "batchjobqueue": { color: "#ED7100", label: "Batch Job Queue", icon: "Arch_AWS-Batch_48.svg" },
+            // ─── Networking (additional) ─────────────────────────────────
+            "loadbalancer": { color: "#8C4FFF", label: "Load Balancer", icon: "Arch_Elastic-Load-Balancing_48.svg" },
+            "listener": { color: "#8C4FFF", label: "LB Listener", icon: "Arch_Elastic-Load-Balancing_48.svg" },
+            "listenerrule": { color: "#8C4FFF", label: "LB Listener Rule", icon: "Arch_Elastic-Load-Balancing_48.svg" },
+            "targetgroup": { color: "#8C4FFF", label: "Target Group", icon: "Arch_Elastic-Load-Balancing_48.svg" },
+            "classicelb": { color: "#8C4FFF", label: "Classic ELB", icon: "Arch_Elastic-Load-Balancing_48.svg" },
+            "hostedzone": { color: "#8C4FFF", label: "Hosted Zone", icon: "Arch_Amazon-Route-53_48.svg" },
+            "recordset": { color: "#8C4FFF", label: "DNS Record", icon: "Arch_Amazon-Route-53_48.svg" },
+            "resolverendpoint": { color: "#8C4FFF", label: "Resolver Endpoint", icon: "Arch_Amazon-Route-53_48.svg" },
+            "resolverrule": { color: "#8C4FFF", label: "Resolver Rule", icon: "Arch_Amazon-Route-53_48.svg" },
+            // ─── Application Integration ─────────────────────────────────
+            "sqsqueue": { color: "#E7157B", label: "SQS Queue", icon: "Arch_Amazon-Simple-Queue-Service_48.svg" },
+            "snstopic": { color: "#E7157B", label: "SNS Topic", icon: "Arch_Amazon-Simple-Notification-Service_48.svg" },
+            "snssubscription": { color: "#E7157B", label: "SNS Subscription", icon: "Arch_Amazon-Simple-Notification-Service_48.svg" },
+            "eventbus": { color: "#E7157B", label: "EventBridge Bus", icon: "Arch_Amazon-EventBridge_48.svg" },
+            "eventrule": { color: "#E7157B", label: "EventBridge Rule", icon: "Arch_Amazon-EventBridge_48.svg" },
+            "eventbridgepipe": { color: "#E7157B", label: "EventBridge Pipe", icon: "Arch_Amazon-EventBridge_48.svg" },
+            "statemachine": { color: "#E7157B", label: "Step Function", icon: "Arch_AWS-Step-Functions_48.svg" },
+            "mqbroker": { color: "#E7157B", label: "MQ Broker", icon: "Arch_Amazon-MQ_48.svg" },
+            "mskcluster": { color: "#E7157B", label: "MSK Cluster", icon: "Arch_Amazon-Managed-Streaming-for-Apache-Kafka_48.svg" },
+            "graphqlapi": { color: "#E7157B", label: "AppSync API", icon: "Arch_AWS-AppSync_48.svg" },
+            // ─── Analytics ───────────────────────────────────────────────
+            "kinesisstream": { color: "#3B48CC", label: "Kinesis Stream", icon: "Arch_Amazon-Kinesis-Data-Streams_48.svg" },
+            "gluedatabase": { color: "#3B48CC", label: "Glue Database", icon: "Arch_AWS-Glue_48.svg" },
+            "gluetable": { color: "#3B48CC", label: "Glue Table", icon: "Arch_AWS-Glue_48.svg" },
+            "gluejob": { color: "#3B48CC", label: "Glue Job", icon: "Arch_AWS-Glue_48.svg" },
+            "gluecrawler": { color: "#3B48CC", label: "Glue Crawler", icon: "Arch_AWS-Glue_48.svg" },
+            // ─── Security (additional) ───────────────────────────────────
+            "certificate": { color: "#DD344C", label: "ACM Certificate", icon: "Arch_AWS-Certificate-Manager_48.svg" },
+            "kmskey": { color: "#DD344C", label: "KMS Key", icon: "Arch_AWS-Key-Management-Service_48.svg" },
+            "secret": { color: "#DD344C", label: "Secret", icon: "Arch_AWS-Secrets-Manager_48.svg" },
+            "webacl": { color: "#DD344C", label: "WAF ACL", icon: "Arch_AWS-WAF_48.svg" },
+            "userpool": { color: "#DD344C", label: "Cognito User Pool", icon: "Arch_Amazon-Cognito_48.svg" },
+            "cognitoclient": { color: "#DD344C", label: "Cognito Client", icon: "Arch_Amazon-Cognito_48.svg" },
+            "networkfirewall": { color: "#DD344C", label: "Network Firewall", icon: "Res_Firewall_48_Dark.svg" },
+            // ─── Management & Governance ─────────────────────────────────
+            "cfnstack": { color: "#E7157B", label: "CloudFormation Stack", icon: "Arch_AWS-CloudFormation_48.svg" },
+            "cfnstackset": { color: "#E7157B", label: "CFN Stack Set", icon: "Arch_AWS-CloudFormation_48.svg" },
+            "metricalarm": { color: "#E7157B", label: "CloudWatch Alarm", icon: "Arch_Amazon-CloudWatch_48.svg" },
+            "compositealarm": { color: "#E7157B", label: "Composite Alarm", icon: "Arch_Amazon-CloudWatch_48.svg" },
+            "metricstream": { color: "#E7157B", label: "Metric Stream", icon: "Arch_Amazon-CloudWatch_48.svg" },
+            // ─── Storage (additional) ────────────────────────────────────
+            "filesystem": { color: "#3B48CC", label: "EFS File System", icon: "Arch_Amazon-EFS_48.svg" },
+            "fsxfilesystem": { color: "#3B48CC", label: "FSx File System", icon: "Arch_Amazon-FSx_48.svg" },
+            "backupvault": { color: "#3B48CC", label: "Backup Vault", icon: "Arch_AWS-Backup_48.svg" },
+            "backupplan": { color: "#3B48CC", label: "Backup Plan", icon: "Arch_AWS-Backup_48.svg" },
+            "storagegateway": { color: "#3B48CC", label: "Storage Gateway", icon: "Arch_AWS-Storage-Gateway_48.svg" },
+            "directorybucket": { color: "#3B48CC", label: "S3 Directory Bucket", icon: "Res_Amazon-Simple-Storage-Service_Bucket_48.svg" },
+            // ─── Migration ───────────────────────────────────────────────
+            "transferserver": { color: "#ED7100", label: "Transfer Server", icon: "Arch_AWS-Transfer-Family_48.svg" },
+            // ─── Developer Tools ─────────────────────────────────────────
+            "codebuildproject": { color: "#3B48CC", label: "CodeBuild Project", icon: "Arch_AWS-CodeBuild_48.svg" },
+            "pipeline": { color: "#3B48CC", label: "CodePipeline", icon: "Arch_AWS-CodePipeline_48.svg" },
+        };
+
+        function getConfig(type) {
+            return RESOURCE_TYPES[type] || { color: "#6b7280", label: type, icon: "Res_Gear_48_Dark.svg" };
+        }
+
+        // ─── File drop overlay logic ─────────────────────────────────────
+        const dropOverlay = document.getElementById("drop-overlay");
+        const dropZone = document.getElementById("drop-zone");
+        const fileBtn = document.getElementById("file-btn");
+        const fileInput = document.getElementById("file-input");
+
+        function showDropOverlay() {
+            dropOverlay.classList.add("visible");
+        }
+
+        function hideDropOverlay() {
+            dropOverlay.classList.remove("visible");
+        }
+
+        function readFileAsJSON(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    try {
+                        resolve(JSON.parse(reader.result));
+                    } catch (e) {
+                        reject(new Error("Invalid JSON file"));
+                    }
+                };
+                reader.onerror = () => reject(new Error("Failed to read file"));
+                reader.readAsText(file);
+            });
+        }
+
+        // Returns a promise that resolves with graph JSON data from user file pick, or null if cancelled
+        function waitForFile() {
+            return new Promise((resolve) => {
+                const cancelBtn = document.getElementById("cancel-btn");
+
+                function handleFile(file) {
+                    readFileAsJSON(file).then((data) => {
+                        cleanup();
+                        resolve(data);
+                    }).catch((err) => {
+                        alert(err.message);
+                    });
+                }
+
+                function onCancel() {
+                    cleanup();
+                    resolve(null);
+                }
+
+                function onDragover(e) {
+                    e.preventDefault();
+                    dropZone.classList.add("dragover");
+                }
+                function onDragleave() {
+                    dropZone.classList.remove("dragover");
+                }
+                function onDrop(e) {
+                    e.preventDefault();
+                    dropZone.classList.remove("dragover");
+                    const file = e.dataTransfer.files[0];
+                    if (file) handleFile(file);
+                }
+                function onClickBrowse() {
+                    fileInput.click();
+                }
+                function onFileChange() {
+                    const file = fileInput.files[0];
+                    if (file) handleFile(file);
+                }
+
+                function cleanup() {
+                    dropZone.removeEventListener("dragover", onDragover);
+                    dropZone.removeEventListener("dragleave", onDragleave);
+                    dropZone.removeEventListener("drop", onDrop);
+                    dropZone.removeEventListener("click", onClickBrowse);
+                    fileBtn.removeEventListener("click", onClickBrowse);
+                    fileInput.removeEventListener("change", onFileChange);
+                    cancelBtn.removeEventListener("click", onCancel);
+                }
+
+                dropZone.addEventListener("dragover", onDragover);
+                dropZone.addEventListener("dragleave", onDragleave);
+                dropZone.addEventListener("drop", onDrop);
+                dropZone.addEventListener("click", onClickBrowse);
+                fileBtn.addEventListener("click", onClickBrowse);
+                fileInput.addEventListener("change", onFileChange);
+                cancelBtn.addEventListener("click", onCancel);
+            });
+        }
+
+        // ─── Load graph data ─────────────────────────────────────────────
+        let graphData = null;
+
+        try {
+            const response = await fetch("./graph.json");
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            graphData = await response.json();
+        } catch (e) {
+            console.log("No graph.json available, showing file picker");
+        }
+
+        if (!graphData) {
+            // Show overlay and wait for user to provide a file (no cancel on initial load)
+            document.getElementById("cancel-btn").style.display = "none";
+            showDropOverlay();
+            graphData = await waitForFile();
+            hideDropOverlay();
+            document.getElementById("cancel-btn").style.display = "";
+        }
+
+        // ─── Build graph ─────────────────────────────────────────────────
+        const graph = new Graph({ type: "directed" });
+        graph.import(graphData);
+        console.log(`Graph loaded: ${graph.order} nodes, ${graph.size} edges`);
+
+        // ─── Layout ──────────────────────────────────────────────────────
+        // Assign initial positions (circular) then run ForceAtlas2
+        circular.assign(graph);
+        const fa2Settings = forceAtlas2.inferSettings(graph);
+        forceAtlas2.assign(graph, { iterations: 100, settings: fa2Settings });
+        console.log("Layout computed (ForceAtlas2, 100 iterations)");
+
+        // ─── Count nodes by type ─────────────────────────────────────────
+        const typeCounts = {};
+        graph.forEachNode((node, attrs) => {
+            const type = attrs.resourcetype || "region";
+            typeCounts[type] = (typeCounts[type] || 0) + 1;
+        });
+
+        // ─── Apply visual attributes ─────────────────────────────────────
+        graph.forEachNode((node, attrs) => {
+            const type = attrs.resourcetype || "region";
+            const config = getConfig(type);
+            graph.setNodeAttribute(node, "color", "#232f3e");
+            graph.setNodeAttribute(node, "borderColor", "#94a3b8");
+            graph.setNodeAttribute(node, "image", `./icons/${config.icon}`);
+            graph.setNodeAttribute(node, "type", "pictogram");
+            graph.setNodeAttribute(node, "size", Math.max(8, Math.min(28, 8 + graph.degree(node) * 0.6)));
+        });
+
+        graph.forEachEdge((edge) => {
+            graph.setEdgeAttribute(edge, "color", "#2a2a4a");
+            graph.setEdgeAttribute(edge, "size", 0.4);
+            if (EdgeCurveProgram) {
+                graph.setEdgeAttribute(edge, "type", "curved");
+            }
+        });
+
+        // ─── Sigma renderer ──────────────────────────────────────────────
+        const container = document.getElementById("graph-container");
+
+        let NodePictogramProgram;
+        try {
+            const NodeImageProgram = createNodeImageProgram({
+                padding: 0.15,
+                size: { mode: "max", value: 256 },
+            });
+            const NodeBorderProgram = createNodeBorderProgram({
+                borders: [
+                    { size: { value: 0.15 }, color: { attribute: "borderColor" } },
+                ],
+            });
+            NodePictogramProgram = createNodeCompoundProgram([NodeBorderProgram, NodeImageProgram]);
+        } catch (e) {
+            console.warn("Pictogram program failed, falling back to default nodes", e);
+            NodePictogramProgram = null;
+        }
+
+        const edgeProgramClasses = EdgeCurveProgram ? { curved: EdgeCurveProgram } : {};
+        const defaultEdgeType = EdgeCurveProgram ? "curved" : "line";
+
+        // ─── Custom dark hover/label renderers ───────────────────────────
+        function drawNodeLabel(context, data, settings) {
+            if (!data.label) return;
+            const size = settings.labelSize;
+            const font = settings.labelFont;
+            const weight = settings.labelWeight || "normal";
+            context.font = `${weight} ${size}px ${font}`;
+            context.fillStyle = "#f0f0f0";
+            context.fillText(data.label, data.x + data.size + 3, data.y + size / 3);
+        }
+
+        function drawNodeHover(context, data, settings) {
+            const size = settings.labelSize;
+            const font = settings.labelFont;
+            const weight = settings.labelWeight || "normal";
+            context.font = `${weight} ${size}px ${font}`;
+
+            // Dark background with subtle glow
+            context.fillStyle = "#1e293b";
+            context.shadowOffsetX = 0;
+            context.shadowOffsetY = 0;
+            context.shadowBlur = 12;
+            context.shadowColor = "rgba(140, 79, 255, 0.6)";
+
+            const PADDING = 2;
+
+            if (typeof data.label === "string") {
+                const textWidth = context.measureText(data.label).width;
+                const boxWidth = Math.round(textWidth + 5);
+                const boxHeight = Math.round(size + 2 * PADDING);
+                const radius = Math.max(data.size, size / 2) + PADDING;
+                const angleRadian = Math.asin(boxHeight / 2 / radius);
+                const xDeltaCoord = Math.sqrt(Math.abs(Math.pow(radius, 2) - Math.pow(boxHeight / 2, 2)));
+
+                context.beginPath();
+                context.moveTo(data.x + xDeltaCoord, data.y + boxHeight / 2);
+                context.lineTo(data.x + radius + boxWidth, data.y + boxHeight / 2);
+                context.lineTo(data.x + radius + boxWidth, data.y - boxHeight / 2);
+                context.lineTo(data.x + xDeltaCoord, data.y - boxHeight / 2);
+                context.arc(data.x, data.y, radius, angleRadian, -angleRadian);
+                context.closePath();
+                context.fill();
+            } else {
+                context.beginPath();
+                context.arc(data.x, data.y, data.size + PADDING, 0, Math.PI * 2);
+                context.closePath();
+                context.fill();
+            }
+
+            context.shadowOffsetX = 0;
+            context.shadowOffsetY = 0;
+            context.shadowBlur = 0;
+
+            // Draw label with light text
+            drawNodeLabel(context, data, settings);
+        }
+
+        const sigmaOptions = {
+            defaultNodeType: NodePictogramProgram ? "pictogram" : "circle",
+            defaultEdgeType,
+            labelRenderedSizeThreshold: 10,
+            labelFont: "Inter, system-ui, sans-serif",
+            labelSize: 12,
+            labelColor: { color: "#e0e0e0" },
+            defaultEdgeColor: "#2a2a4a",
+            renderEdgeLabels: false,
+            allowInvalidContainer: true,
+            defaultDrawNodeHover: drawNodeHover,
+            defaultDrawNodeLabel: drawNodeLabel,
+        };
+        if (NodePictogramProgram) {
+            sigmaOptions.nodeProgramClasses = { pictogram: NodePictogramProgram };
+        }
+        if (EdgeCurveProgram) {
+            sigmaOptions.edgeProgramClasses = edgeProgramClasses;
+        }
+
+        const sigma = new Sigma(graph, container, sigmaOptions);
+
+        // ─── Stats ───────────────────────────────────────────────────────
+        document.getElementById("stats").textContent =
+            `${graph.order} nodes · ${graph.size} edges`;
+
+        // ─── State ───────────────────────────────────────────────────────
+        let hoveredNode = null;
+        let lockedNode = null;
+        let searchQuery = "";
+        const hiddenTypes = new Set();
+
+        function isNodeVisible(node) {
+            const attrs = graph.getNodeAttributes(node);
+            const type = attrs.resourcetype || "region";
+            if (hiddenTypes.has(type)) return false;
+            if (searchQuery) {
+                const label = (attrs.label || "").toLowerCase();
+                const id = node.toLowerCase();
+                const rt = type.toLowerCase();
+                if (!label.includes(searchQuery) && !id.includes(searchQuery) && !rt.includes(searchQuery)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        function refreshReducers() {
+            sigma.setSetting("nodeReducer", (node, data) => {
+                // Hidden by filter
+                if (!isNodeVisible(node)) {
+                    return { ...data, hidden: true };
+                }
+                // When a node is clicked/locked: isolate it + neighbors
+                if (lockedNode) {
+                    if (node === lockedNode) {
+                        return { ...data, highlighted: true, forceLabel: true, zIndex: 1 };
+                    }
+                    if (graph.hasEdge(node, lockedNode) || graph.hasEdge(lockedNode, node)) {
+                        return { ...data, forceLabel: true };
+                    }
+                    return { ...data, color: "#2a2f3a", borderColor: "#2a2f3a", label: "", image: data.image, size: data.size * 0.5 };
+                }
+                // When hovering (no lock): just highlight the hovered node
+                if (hoveredNode && node === hoveredNode) {
+                    return { ...data, highlighted: true, forceLabel: true, zIndex: 1 };
+                }
+                return data;
+            });
+
+            sigma.setSetting("edgeReducer", (edge, data) => {
+                const source = graph.source(edge);
+                const target = graph.target(edge);
+                // Hidden if either endpoint is hidden
+                if (!isNodeVisible(source) || !isNodeVisible(target)) {
+                    return { ...data, hidden: true };
+                }
+                // When locked: only show edges connected to locked node
+                if (lockedNode) {
+                    if (source === lockedNode || target === lockedNode) {
+                        return { ...data, color: "#8C4FFF", size: 1.5, hidden: false };
+                    }
+                    return { ...data, hidden: true };
+                }
+                return data;
+            });
+
+            sigma.refresh();
+        }
+
+        // ─── Lock indicator ──────────────────────────────────────────────
+        const lockIndicator = document.getElementById("lock-indicator");
+
+        function updateLockUI() {
+            lockIndicator.style.display = lockedNode ? "block" : "none";
+        }
+
+        lockIndicator.addEventListener("click", () => {
+            lockedNode = null;
+            updateLockUI();
+            refreshReducers();
+            showNodeInfo(null);
+        });
+
+        // ─── Node info panel ─────────────────────────────────────────────
+        const nodeInfo = document.getElementById("node-info");
+
+        function formatValue(v) {
+            if (v === null || v === undefined) return "—";
+            if (Array.isArray(v)) {
+                if (v.length === 0) return "—";
+                // Array of tag objects like [{Key: "Name", Value: "foo"}]
+                if (v[0] && typeof v[0] === "object" && ("Key" in v[0] || "key" in v[0])) {
+                    return v.map(t => `<span class="tag">${t.Key || t.key}: ${t.Value || t.value || ""}</span>`).join("");
+                }
+                return v.map(item => typeof item === "object" ? JSON.stringify(item) : String(item)).join(", ");
+            }
+            if (typeof v === "object") {
+                // Plain object — render as key: value pairs
+                return Object.entries(v)
+                    .map(([key, val]) => `<span class="tag">${key}: ${val}</span>`)
+                    .join("");
+            }
+            return String(v);
+        }
+
+        function showNodeInfo(node) {
+            if (!node) {
+                nodeInfo.innerHTML = '<p style="color: #666;">Hover or click a node to see details.</p>';
+                return;
+            }
+            const attrs = graph.getNodeAttributes(node);
+            const type = attrs.resourcetype || "unknown";
+            const config = getConfig(type);
+            const neighbors = graph.neighbors(node);
+
+            nodeInfo.innerHTML = `
+                <div class="field"><div class="label">Label</div><div class="value">${attrs.label || node}</div></div>
+                <div class="field"><div class="label">Type</div><div class="value">${config.label} (${type})</div></div>
+                <div class="field"><div class="label">ID</div><div class="value">${node}</div></div>
+                ${Object.entries(attrs)
+                    .filter(([k]) => !["x","y","size","color","label","resourcetype","id","type","image","highlighted","zIndex","borderColor","forceLabel"].includes(k))
+                    .map(([k, v]) => `<div class="field"><div class="label">${k}</div><div class="value">${formatValue(v)}</div></div>`)
+                    .join("")}
+                <div class="field"><div class="label">Connections</div><div class="value">${neighbors.length} (${graph.inDegree(node)} in, ${graph.outDegree(node)} out)</div></div>
+            `;
+        }
+
+        // ─── Interactions ────────────────────────────────────────────────
+        sigma.on("enterNode", ({ node }) => {
+            hoveredNode = node;
+            if (!lockedNode) {
+                refreshReducers();
+            }
+        });
+
+        sigma.on("leaveNode", () => {
+            hoveredNode = null;
+            if (!lockedNode) {
+                refreshReducers();
+            }
+        });
+
+        sigma.on("clickNode", ({ node }) => {
+            lockedNode = node;
+            updateLockUI();
+            refreshReducers();
+            showNodeInfo(node);
+
+            // Zoom to the clicked node
+            const nodePosition = sigma.getNodeDisplayData(node);
+            if (nodePosition) {
+                sigma.getCamera().animate(
+                    { x: nodePosition.x, y: nodePosition.y, ratio: 0.3 },
+                    { duration: 400 }
+                );
+            }
+        });
+
+        sigma.on("clickStage", () => {
+            lockedNode = null;
+            updateLockUI();
+            refreshReducers();
+            showNodeInfo(null);
+        });
+
+        document.addEventListener("keydown", (e) => {
+            if (e.key === "Escape" && lockedNode) {
+                lockedNode = null;
+                updateLockUI();
+                refreshReducers();
+                showNodeInfo(null);
+            }
+        });
+
+        // ─── Search ──────────────────────────────────────────────────────
+        const searchInput = document.getElementById("search");
+        const searchClear = document.getElementById("search-clear");
+
+        searchInput.addEventListener("input", (e) => {
+            searchQuery = e.target.value.toLowerCase();
+            searchClear.style.display = searchQuery ? "block" : "none";
+            refreshReducers();
+        });
+
+        searchClear.addEventListener("click", () => {
+            searchInput.value = "";
+            searchQuery = "";
+            searchClear.style.display = "none";
+            refreshReducers();
+            searchInput.focus();
+        });
+
+        // ─── Filter toggles ──────────────────────────────────────────────
+        const filtersContainer = document.getElementById("filters");
+
+        // Group resource types by category
+        const categories = [
+            { name: "Networking", color: "#8C4FFF", types: ["vpc","subnet","internetgateway","natgateway","networkinterface","routetable","vpcendpoint","vpcpeering","flowlog","networkacl","dhcpoptions","prefixlist","transitgateway","transitgatewayroutetable","localgateway","elasticip","instanceconnectendpoint","region","distribution","cloudfrontfunction","originaccesscontrol","loadbalancer","listener","listenerrule","targetgroup","classicelb","hostedzone","recordset","resolverendpoint","resolverrule","egressonlyinternetgateway","clientvpnendpoint","vpcendpointservice","vpclink","globalnetwork","corenetwork"] },
+            { name: "Compute", color: "#ED7100", types: ["instance","ami","launchtemplate","keypair","lambdafunction","lambdaalias","lambdalayer","functionurl","provisionedconcurrency","eventsourcemapping","autoscalinggroup","launchconfiguration","apprunnerservice","batchcomputeenvironment","batchjobqueue","transferserver"] },
+            { name: "Containers", color: "#ED7100", types: ["ecscluster","ecsservice","taskdefinition","containerinstance","ecrrepository","ekscluster","eksnodegroup","eksaddon","fargateprofile"] },
+            { name: "Databases", color: "#3B48CC", types: ["dbinstance","dbcluster","dbproxy","dbproxytargetgroup","dbsubnetgroup","dynamodbtable","cachecluster","replicationgroup","cachesubnetgroup","serverlesscache","neptunecluster","neptuneinstance","neptunesubnetgroup","docdbcluster","docdbinstance","docdbsubnetgroup","redshiftcluster","redshiftsubnetgroup","opensearchdomain"] },
+            { name: "Storage", color: "#3B48CC", types: ["volume","snapshot","s3bucket","directorybucket","filesystem","fsxfilesystem","backupvault","backupplan","storagegateway"] },
+            { name: "Integration", color: "#E7157B", types: ["sqsqueue","snstopic","snssubscription","eventbus","eventrule","eventbridgepipe","statemachine","mqbroker","mskcluster","graphqlapi"] },
+            { name: "Analytics", color: "#3B48CC", types: ["kinesisstream","gluedatabase","gluetable","gluejob","gluecrawler","codebuildproject","pipeline"] },
+            { name: "Monitoring", color: "#E7157B", types: ["loggroup","alarm","metricalarm","compositealarm","metricstream","cfnstack","cfnstackset"] },
+            { name: "IAM / Security", color: "#DD344C", types: ["role","user","policy","group","instanceprofile","mfadevice","virtualmfadevice","accesskey","sshpublickey","servercertificate","securitygroup","certificate","kmskey","secret","webacl","userpool","cognitoclient","networkfirewall"] },
+        ];
+
+        // Collect types not covered by any category
+        const categorizedTypes = new Set(categories.flatMap(c => c.types));
+        const otherTypes = Object.keys(typeCounts).filter(t => !categorizedTypes.has(t));
+        if (otherTypes.length > 0) {
+            categories.push({ name: "Other", color: "#6b7280", types: otherTypes });
+        }
+
+        for (const category of categories) {
+            // Count nodes in this category present in graph
+            const categoryTypes = category.types.filter(t => typeCounts[t]);
+            if (categoryTypes.length === 0) continue;
+
+            const totalCount = categoryTypes.reduce((sum, t) => sum + (typeCounts[t] || 0), 0);
+
+            const item = document.createElement("label");
+            item.className = "filter-item";
+            item.innerHTML = `
+                <input type="checkbox" checked data-category="${category.name}" />
+                <div class="filter-dot" style="background: ${category.color}"></div>
+                <span>${category.name}</span>
+                <span class="filter-count">${totalCount}</span>
+            `;
+
+            const checkbox = item.querySelector("input");
+            checkbox.addEventListener("change", () => {
+                for (const type of categoryTypes) {
+                    if (checkbox.checked) {
+                        hiddenTypes.delete(type);
+                    } else {
+                        hiddenTypes.add(type);
+                    }
+                }
+                item.classList.toggle("disabled", !checkbox.checked);
+                refreshReducers();
+            });
+
+            filtersContainer.appendChild(item);
+        }
+
+        // ─── Load new graph button ───────────────────────────────────────
+        document.getElementById("load-graph-btn").addEventListener("click", async () => {
+            showDropOverlay();
+            const newData = await waitForFile();
+            hideDropOverlay();
+
+            // User cancelled
+            if (!newData) return;
+
+            // Clear and rebuild graph
+            graph.clear();
+            graph.import(newData);
+            console.log(`New graph loaded: ${graph.order} nodes, ${graph.size} edges`);
+
+            // Re-apply layout
+            circular.assign(graph);
+            const newSettings = forceAtlas2.inferSettings(graph);
+            forceAtlas2.assign(graph, { iterations: 100, settings: newSettings });
+
+            // Re-apply visual attributes
+            graph.forEachNode((node, attrs) => {
+                const type = attrs.resourcetype || "region";
+                const config = getConfig(type);
+                graph.setNodeAttribute(node, "color", "#232f3e");
+                graph.setNodeAttribute(node, "borderColor", "#94a3b8");
+                graph.setNodeAttribute(node, "image", `./icons/${config.icon}`);
+                graph.setNodeAttribute(node, "type", "pictogram");
+                graph.setNodeAttribute(node, "size", Math.max(8, Math.min(28, 8 + graph.degree(node) * 0.6)));
+            });
+            graph.forEachEdge((edge) => {
+                graph.setEdgeAttribute(edge, "color", "#2a2a4a");
+                graph.setEdgeAttribute(edge, "size", 0.4);
+                if (EdgeCurveProgram) {
+                    graph.setEdgeAttribute(edge, "type", "curved");
+                }
+            });
+
+            // Update stats
+            document.getElementById("stats").textContent =
+                `${graph.order} nodes · ${graph.size} edges`;
+
+            // Reset state
+            lockedNode = null;
+            hoveredNode = null;
+            searchQuery = "";
+            searchInput.value = "";
+            hiddenTypes.clear();
+            updateLockUI();
+            refreshReducers();
+            showNodeInfo(null);
+
+            // Rebuild filters
+            filtersContainer.innerHTML = "<h3>Resource Types</h3>";
+            const newTypeCounts = {};
+            graph.forEachNode((node, attrs) => {
+                const type = attrs.resourcetype || "region";
+                newTypeCounts[type] = (newTypeCounts[type] || 0) + 1;
+            });
+            for (const category of categories) {
+                const categoryTypes = category.types.filter(t => newTypeCounts[t]);
+                if (categoryTypes.length === 0) continue;
+                const totalCount = categoryTypes.reduce((sum, t) => sum + (newTypeCounts[t] || 0), 0);
+                const item = document.createElement("label");
+                item.className = "filter-item";
+                item.innerHTML = `
+                    <input type="checkbox" checked data-category="${category.name}" />
+                    <div class="filter-dot" style="background: ${category.color}"></div>
+                    <span>${category.name}</span>
+                    <span class="filter-count">${totalCount}</span>
+                `;
+                const checkbox = item.querySelector("input");
+                checkbox.addEventListener("change", () => {
+                    for (const type of categoryTypes) {
+                        if (checkbox.checked) hiddenTypes.delete(type);
+                        else hiddenTypes.add(type);
+                    }
+                    item.classList.toggle("disabled", !checkbox.checked);
+                    refreshReducers();
+                });
+                filtersContainer.appendChild(item);
+            }
+
+            // Reset camera
+            sigma.getCamera().animatedReset({ duration: 300 });
+        });
+
+        // ─── Version ─────────────────────────────────────────────────────
+        try {
+            const vRes = await fetch("./api/version");
+            if (vRes.ok) {
+                const { version } = await vRes.json();
+                document.getElementById("version").textContent = `v${version}`;
+            }
+        } catch {}
+
+        // Initial render
+        refreshReducers();
+    </script>
+</body>
+</html>
